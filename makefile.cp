@@ -21,5 +21,3 @@ all:
 
 clean:
 	rm -rf *.cmd *.o *.ko *.mod.c *.order *.symvers
-
-

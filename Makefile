@@ -9,4 +9,4 @@ all:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 
 clean:
-	rm -rf *.o *.mod.c *.order *.symvers *.ko
+	rm -rf *.o *.mod.c *.order *.symvers *.ko *.swo *.swp
