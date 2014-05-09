@@ -9,6 +9,8 @@
 #define ETHERNET_MTU   1500 /* Default Ethernet MTU */
 #define ETHERNET_HEAD  26 /* 8bytes synchronisation filed + 6bytes dest mac + 6bytes src mac + 2bytes protocol + 4bytes CRC */
 
+//typedef char bool;
+
 typedef enum npstat{
 	PACKET_PREPROCESS,   /* wait process */
 	PACKET_TRANSMIT,     /* can transmit */
@@ -37,7 +39,9 @@ typedef struct net_packet{
 	struct list_head list; /* packet list */
 	unsigned int packet_number; /* packet count */
 	unsigned int sort_number;   /* put this packet in which region based this number  */
-	unsigned int buf_len;  /* data length */
+	unsigned int frag_num; /* if len > MTU + head, should fragment the packet. this number increment from 0. */
+	unsigned int last_frag_num; /* the sum of the packet was fragmented.  if this number is 0 not fragement */
+	unsigned int data_len;  /* data length */
 	unsigned char *buf;    /* net packet data */
 	npstat_e pack_stat;    /* packet status */
 	list_stat_e list_stat; /* current list status */
