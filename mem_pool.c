@@ -26,6 +26,8 @@
 #include <asm/io.h>
 #include <linux/mm.h>
 #include <linux/list.h>
+#include <linux/netdevice.h>
+#include <linux/kthread.h>
 
 #include "mem_pool.h"
 
@@ -34,18 +36,23 @@ MODULE_LICENSE("GPL");
 /* Global Function */
 extern int register_hook(void);
 extern int unregister_hook(void);
+extern int ip_routout(struct sk_buff *skb);
 
 /* Global Variable */
 mem_region_t mem_region[MAX_REGION_NUM];
+int volatile post_rout = 0;
+int region_num = 0;
+DECLARE_WAIT_QUEUE_HEAD(skb_wait);
+DECLARE_MUTEX(list_sem);
 
 /* Local Variable */
 static int memdeepth = 0;
-static int region_num = 0;
 static int membase = 0;
 static int major = 0;  /* default dynamic */
 static struct cdev mem_pool_cdev;
 static int custom_mtu = 0;    /* net packet MTU */
 static int custom_headl = 0;  /* net packet head length */
+static struct task_struct *kthread;
 
 /* get param form userspace when insmod */
 module_param(memdeepth, int, S_IRUSR);
@@ -111,6 +118,7 @@ static void region_init(mem_region_t *region, int region_length)
 	{
 		/* the packet buf immediately following the struct */
 		pnode->buf = (unsigned char *)pnode + sizeof(net_packet_t);
+		printk("pnode->buf=0x%08x\n", pnode->buf);
 		/* init packet status */
 		pnode->pack_stat = PACKET_FREE;
 		/* init the packet list status */
@@ -133,12 +141,6 @@ static void mem_region_init(void)
 	int i = 0;
 	mem_region_t *pmr = (mem_region_t *)membase; /* memery remap base address */
 
-/* only for test */
-	mem_pool_trace("register net hook function.");
-	register_hook();
-
-	return;
-/* end */
 
 	/* memery align */
 	spare = memdeepth % region_num;
@@ -168,11 +170,69 @@ static void mem_region_init(void)
 	}
 }
 
+static int post_routing_task(void *unused)
+{
+	struct list_head *proc_head = NULL;
+	struct list_head *free_head = NULL;
+	struct list_head *plist = NULL;
+	mem_region_t *preg = NULL;
+	int i = 0;
+	net_packet_t *pnet = NULL;
+	int frags = 0;
+
+	while(1)
+	{
+		wait_event_interruptible(skb_wait, post_rout != 0);
+		if(i < region_num) 
+		{
+			/* every region */
+			preg = &mem_region[i];
+			/* process list in every region */
+			proc_head = &preg->process_list;
+			free_head = &preg->free_list;
+			if(proc_head->next == proc_head)
+			{
+				i++;
+				printk("region %d empty.\n", i);
+				continue;
+			}
+			plist = proc_head->next;
+			/* traverse the process list in every region */
+			down(&list_sem);
+			while(plist->next != plist)
+			{
+				pnet = list_entry(plist, net_packet_t, list);
+				frags = pnet->last_frag_num;
+				//printk("<0>frags number %d.\n", frags);
+				ip_routout(pnet->skb);
+				do{
+					if (pnet == NULL)
+						pnet = list_entry(plist, net_packet_t, list);
+					plist = plist->next;
+					list_del(&pnet->list);
+					list_add_tail(&pnet->list, free_head);
+					pnet = NULL;
+					frags--;
+				}while(frags >= 0);
+			}
+			up(&list_sem);
+			i++;
+		}
+		else
+		{
+			post_rout = 0;
+			i = 0;
+		}
+	}
+}
+
 /* module init fucntion */
 static int mem_module_init(void)
 {
 	dev_t dev;
 	int rc = 0;
+
+	printk("hello world.\n");
 
 	if(memdeepth)
 	{
@@ -215,16 +275,29 @@ static int mem_module_init(void)
 	cdev_init(&mem_pool_cdev, &mem_pool_fileops);
 	/* add device to driver list */
 	cdev_add(&mem_pool_cdev, dev, DEVICE_NUMBER);
+
+	/* only for test */
+	mem_pool_trace("register net hook function.");
+	register_hook();
+	/* end */
+
+	/* start post routing task */
+	kthread = kthread_run(post_routing_task, NULL, "postrouting");
+	
 	return 0;
 }
 
 /* module deinit */
 static void mem_module_exit(void)
 {
+	printk("<0>good bye world.\n");
+#if 1
 	/* delete device and release resource */
+	kthread_stop(kthread);
 	unregister_hook();
 	cdev_del(&mem_pool_cdev);
 	unregister_chrdev_region(MKDEV(major,0), DEVICE_NUMBER);
+#endif
 }
 
 module_init(mem_module_init);

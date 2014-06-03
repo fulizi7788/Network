@@ -21,11 +21,17 @@
 #include <linux/netdevice.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
 
 #include "mem_pool.h"
 
 /* gloable variable */
 extern mem_region_t mem_region[MAX_REGION_NUM];
+extern volatile int post_rout;
+extern int region_num;
+extern wait_queue_head_t skb_wait;
+extern struct semaphore list_sem;
 
 /* local variable */
 int packet_num = 0;
@@ -75,7 +81,7 @@ static int search_region(struct sk_buff *skb)
 	/* set sort number, packet_num is a serial number */
 	sort_num = packet_num;
 	/* caculate the region number data will be put in */
-	regnum = sort_num %  MAX_REGION_NUM;
+	regnum = sort_num %  region_num;
 	/* average put the packet into every region */
 	pregion = &mem_region[regnum];
 	head = &pregion->free_list;
@@ -88,9 +94,12 @@ static int search_region(struct sk_buff *skb)
 	need = data_len / space;
 	if(data_len % space)
 		need += 1;
+
+	printk("need %d free node to store this packet.\n", need);
+
 	if(check_free(need, head)) 
 		return regnum;
-	for( sort_num = 0; sort_num < MAX_REGION_NUM; sort_num++)
+	for( sort_num = 0; sort_num < region_num; sort_num++)
 	{
 		if(sort_num == regnum)
 			continue;
@@ -128,13 +137,17 @@ static void store_packet(int regnum, struct sk_buff *skb)
 	frags = data_len / space;
 	if(data_len % space)
 		frags += 1;
-	
+
+	//printk("this packet will be frags %d space %d.\n", frags, space);
+
 	plist = free_head->next;
+	down(&list_sem);
 	for(i = 0; i < frags; i++)
 	{
 		pnet = list_entry(plist, net_packet_t, list);
 		pnet->frag_num = i;
 		pnet->last_frag_num = frags - 1;
+		pnet->skb = skb; /* save the skb address, for post_routing_task */
 		if(data_len >= space)
 		{
 			/* copy data into region free list */
@@ -144,17 +157,36 @@ static void store_packet(int regnum, struct sk_buff *skb)
 		}
 		else
 		{
+			if(pnet->buf == NULL)
+			{
+				printk("unknow error plist=0x%08x.\n", pnet);
+				break;
+			}
 			/* copy data into region free list */
 			memcpy(pnet->buf, pdata, data_len);
 			pnet->data_len = data_len;
 			data_len = 0;
 		}
+		printk("data_len=%d\n", data_len);	
 		plist = plist->next;
+		if(plist->next == NULL)
+		{
+			printk("no available node to store packet, error.\n");
+			break;
+		}
 		/* delete this node from free list */
 		list_del(&pnet->list);
 		/* add the node into process list tail */
 		list_add_tail(&pnet->list, proc_head);
 	}
+	up(&list_sem);
+	post_rout = 1;
+	if(post_rout)
+	{
+		wake_up(&skb_wait);
+	}
+	printk("frags: %d\n", pnet->last_frag_num);
+	printk("store packet in region %d success.\n", regnum);
 }
 
 /* capture net packet put in memery pool */
@@ -162,6 +194,8 @@ static int capture_packet(unsigned int hooknum, struct sk_buff *skb, const struc
 		const struct net_device *out, int (*okfn)(struct sk_buff *) )
 {
 	int regnum = 0;
+
+#if 1
 	printk("skb->mac_head=0x%08x\n", skb->mac_header);
 	printk("skb->network_head=0x%08x\n", skb->network_header);
 	printk("skb->transport_head=0x%08x\n", skb->transport_header);
@@ -171,6 +205,7 @@ static int capture_packet(unsigned int hooknum, struct sk_buff *skb, const struc
 	printk("skb->endl=0x%08x\n", skb->end);
 	printk("skb->true_len=%d\n", skb->len);
 	printk("skb->data_len=%d\n", skb->data_len);
+#endif
 	/* skb is no linearize */
 	if(skb_is_nonlinear(skb))
 	{
@@ -183,16 +218,22 @@ static int capture_packet(unsigned int hooknum, struct sk_buff *skb, const struc
 	}
 	/* search available region to store this packet */
 	regnum = search_region(skb);
+	printk("find available regnum %d to store this packet.\n", regnum);
 	if(regnum == MAX_REGION_NUM)
 	{
 		/* no free memery to store this packet, just drop */
+		printk("No free memery to store this packet.\n");
 		return NF_DROP;
 	}
 	/* sotre packet into memery region */
 	store_packet(regnum, skb);
-
+	packet_num++;
+#if 1
 	/* now only for test */
+	return NF_STOLEN;
+#else
 	return NF_ACCEPT;
+#endif
 }
 
 /* register hook */
