@@ -27,7 +27,7 @@
 #include "mem_pool.h"
 
 /* gloable variable */
-extern mem_region_t mem_region[MAX_REGION_NUM];
+extern mem_region_t *mem_region[MAX_REGION_NUM];
 extern volatile int post_rout;
 extern int region_num;
 extern wait_queue_head_t skb_wait;
@@ -83,7 +83,7 @@ static int search_region(struct sk_buff *skb)
 	/* caculate the region number data will be put in */
 	regnum = sort_num %  region_num;
 	/* average put the packet into every region */
-	pregion = &mem_region[regnum];
+	pregion = mem_region[regnum];
 	head = &pregion->free_list;
 	/* space in every element */
 	space = pregion->mtu + pregion->headl;
@@ -103,7 +103,7 @@ static int search_region(struct sk_buff *skb)
 	{
 		if(sort_num == regnum)
 			continue;
-		pregion = &mem_region[sort_num];
+		pregion = mem_region[sort_num];
 		head = &pregion->free_list;
 		if(check_free(need, head))
 			break;
@@ -125,7 +125,7 @@ static void store_packet(int regnum, struct sk_buff *skb)
 	net_packet_t *pnet;
 	unsigned char *pdata = skb->data;
 	
-	pregion = &mem_region[regnum];
+	pregion = mem_region[regnum];
 	free_head = &pregion->free_list;
 	proc_head = &pregion->process_list;
 	/* caculate free space in every element in free list */
@@ -141,7 +141,6 @@ static void store_packet(int regnum, struct sk_buff *skb)
 	//printk("this packet will be frags %d space %d.\n", frags, space);
 
 	plist = free_head->next;
-	down(&list_sem);
 	for(i = 0; i < frags; i++)
 	{
 		pnet = list_entry(plist, net_packet_t, list);
@@ -168,18 +167,20 @@ static void store_packet(int regnum, struct sk_buff *skb)
 			data_len = 0;
 		}
 		printk("data_len=%d\n", data_len);	
+		down(&list_sem);
 		plist = plist->next;
 		if(plist->next == NULL)
 		{
 			printk("no available node to store packet, error.\n");
+			up(&list_sem);
 			break;
 		}
 		/* delete this node from free list */
 		list_del(&pnet->list);
 		/* add the node into process list tail */
 		list_add_tail(&pnet->list, proc_head);
+		up(&list_sem);
 	}
-	up(&list_sem);
 	post_rout = 1;
 	if(post_rout)
 	{

@@ -30,8 +30,8 @@ typedef enum list_stat{
 
 /* memery region manager struct */
 typedef struct mem_region{
-	int region_start; /* memery region start address */
-	int region_end;   /* memery region end address */
+	unsigned char *region_start; /* memery region start address */
+	unsigned char *region_end;   /* memery region end address */
 	int mtu;          /* max transmit unit size */
 	int headl;         /* net packet head length */
 	int unit_num;     /* this region have packet numbers */

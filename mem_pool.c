@@ -39,7 +39,7 @@ extern int unregister_hook(void);
 extern int ip_routout(struct sk_buff *skb);
 
 /* Global Variable */
-mem_region_t mem_region[MAX_REGION_NUM];
+mem_region_t *mem_region[MAX_REGION_NUM];
 int volatile post_rout = 0;
 int region_num = 0;
 DECLARE_WAIT_QUEUE_HEAD(skb_wait);
@@ -96,9 +96,10 @@ static void region_init(mem_region_t *region, int region_length)
 	int align_length = 0;
 	int unit_num = 0;
 	net_packet_t *pnode = NULL;
+	unsigned char *paddr = NULL;
 	int i = 0;
 
-	pnode = (net_packet_t *)((unsigned char *)pregion->region_start + sizeof(mem_region_t));
+	paddr = pregion->region_start + sizeof(mem_region_t);
 	/* packet memery length = region length - (struct  memery region length) */
 	length = region_length - sizeof(mem_region_t);
 	/* caculate packet length */
@@ -117,7 +118,8 @@ static void region_init(mem_region_t *region, int region_length)
 	for(i = 0; i < unit_num; i++)
 	{
 		/* the packet buf immediately following the struct */
-		pnode->buf = (unsigned char *)pnode + sizeof(net_packet_t);
+		pnode = (net_packet_t *)paddr;
+		pnode->buf = paddr + sizeof(net_packet_t);
 		printk("pnode->buf=0x%08x\n", pnode->buf);
 		/* init packet status */
 		pnode->pack_stat = PACKET_FREE;
@@ -128,7 +130,7 @@ static void region_init(mem_region_t *region, int region_length)
 		/* caculate the next node start, next node immediately following this node
 		 * next pnode = (insigned char *)pnode + sizeof(struct net_packet) + MTU + head length
 		 * */
-		pnode = (net_packet_t *)((unsigned char *)pnode + pregion->mtu + pregion->headl + sizeof(net_packet_t));
+		paddr = paddr + pregion->mtu + pregion->headl + sizeof(net_packet_t);
 	}
 }
 
@@ -139,7 +141,8 @@ static void mem_region_init(void)
 	int region_length = 0;
 	int spare = 0;
 	int i = 0;
-	mem_region_t *pmr = (mem_region_t *)membase; /* memery remap base address */
+	unsigned char *pmr = (unsigned char *)membase; /* memery remap base address */
+	mem_region_t *pregion = NULL;
 
 
 	/* memery align */
@@ -150,23 +153,27 @@ static void mem_region_init(void)
 
 	for(i = 0; i < region_num; i++)
 	{
-		mem_region[i].region_start = (int)pmr;
-		mem_region[i].region_end = (int)((unsigned char *)pmr + region_length - 1);
+		mem_region[i] = (mem_region_t *)pmr;
+		pregion = mem_region[i];
+		pregion->region_start = pmr;
+		pregion->region_end = pmr + region_length;
+
 		if(custom_mtu)
 		{
 			/* support custom config MTU and head length from ioctl */
-			mem_region[i].mtu = custom_mtu;
-			mem_region[i].headl = custom_headl;
+			pregion->mtu = custom_mtu;
+			pregion->headl = custom_headl;
 		}
 		else
 		{
 			/* mtu = Ethernet MTU */
-			mem_region[i].mtu = ETHERNET_MTU;
+			pregion->mtu = ETHERNET_MTU;
 			/* head length = Ethernet head length */
-			mem_region[i].headl = ETHERNET_HEAD;
+			pregion->headl = ETHERNET_HEAD;
 		}
 		/* init free list in memery region */
-		region_init(&mem_region[i], region_length);
+		region_init(pregion, region_length);
+		pmr += region_length;
 	}
 }
 
@@ -180,13 +187,13 @@ static int post_routing_task(void *unused)
 	net_packet_t *pnet = NULL;
 	int frags = 0;
 
-	while(1)
+	while(!kthread_should_stop())
 	{
-		wait_event_interruptible(skb_wait, post_rout != 0);
+		wait_event_interruptible(skb_wait, (post_rout != 0) || kthread_should_stop());
 		if(i < region_num) 
 		{
 			/* every region */
-			preg = &mem_region[i];
+			preg = mem_region[i];
 			/* process list in every region */
 			proc_head = &preg->process_list;
 			free_head = &preg->free_list;
@@ -210,6 +217,7 @@ static int post_routing_task(void *unused)
 						pnet = list_entry(plist, net_packet_t, list);
 					plist = plist->next;
 					list_del(&pnet->list);
+					printk("region %d free_head=0x%08x\n", i, free_head);
 					list_add_tail(&pnet->list, free_head);
 					pnet = NULL;
 					frags--;
@@ -224,6 +232,7 @@ static int post_routing_task(void *unused)
 			i = 0;
 		}
 	}
+	return 0;
 }
 
 /* module init fucntion */
@@ -297,6 +306,7 @@ static void mem_module_exit(void)
 	unregister_hook();
 	cdev_del(&mem_pool_cdev);
 	unregister_chrdev_region(MKDEV(major,0), DEVICE_NUMBER);
+	iounmap(membase);
 #endif
 }
 
